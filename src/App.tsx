@@ -29,7 +29,11 @@ type PixelPosition = {
 
 const MIN_ZOOM = 2
 const MAX_ZOOM = 64
-const MAX_RECENT_COLORS = 5
+const SIDEBAR_RECENT_COLORS = 5
+const COLOR_WHEEL_RECENT_COLORS = 24
+const COLOR_WHEEL_SIZE = 240
+const HUE_RING_THICKNESS = 28
+const TRIANGLE_GAP = 12
 
 const assetModules = import.meta.glob('../assets/**/*.png', {
   eager: true,
@@ -85,6 +89,80 @@ const loadPixelDocument = async (assetUrl: string): Promise<PixelDocument> => {
 }
 
 const clampColorChannel = (value: number) => Math.max(0, Math.min(255, Math.round(value)))
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value))
+
+const hsvToRgb = (h: number, s: number, v: number): Color => {
+  const hue = ((h % 360) + 360) % 360
+  const saturation = clamp01(s)
+  const value = clamp01(v)
+  const chroma = value * saturation
+  const huePrime = hue / 60
+  const x = chroma * (1 - Math.abs((huePrime % 2) - 1))
+
+  let red = 0
+  let green = 0
+  let blue = 0
+
+  if (huePrime >= 0 && huePrime < 1) {
+    red = chroma
+    green = x
+  } else if (huePrime >= 1 && huePrime < 2) {
+    red = x
+    green = chroma
+  } else if (huePrime >= 2 && huePrime < 3) {
+    green = chroma
+    blue = x
+  } else if (huePrime >= 3 && huePrime < 4) {
+    green = x
+    blue = chroma
+  } else if (huePrime >= 4 && huePrime < 5) {
+    red = x
+    blue = chroma
+  } else {
+    red = chroma
+    blue = x
+  }
+
+  const match = value - chroma
+
+  return {
+    r: clampColorChannel((red + match) * 255),
+    g: clampColorChannel((green + match) * 255),
+    b: clampColorChannel((blue + match) * 255),
+    a: 255,
+  }
+}
+
+const rgbToHsv = (r: number, g: number, b: number) => {
+  const red = clampColorChannel(r) / 255
+  const green = clampColorChannel(g) / 255
+  const blue = clampColorChannel(b) / 255
+
+  const max = Math.max(red, green, blue)
+  const min = Math.min(red, green, blue)
+  const delta = max - min
+
+  let hue = 0
+
+  if (delta !== 0) {
+    if (max === red) {
+      hue = 60 * (((green - blue) / delta) % 6)
+    } else if (max === green) {
+      hue = 60 * ((blue - red) / delta + 2)
+    } else {
+      hue = 60 * ((red - green) / delta + 4)
+    }
+  }
+
+  if (hue < 0) {
+    hue += 360
+  }
+
+  const saturation = max === 0 ? 0 : delta / max
+  const value = max
+
+  return { h: hue, s: saturation, v: value }
+}
 
 const areColorsEqual = (left: Color, right: Color) =>
   left.r === right.r && left.g === right.g && left.b === right.b && left.a === right.a
@@ -111,11 +189,16 @@ const App = () => {
   const [pixelDocument, setPixelDocument] = useState<PixelDocument | null>(null)
   const [activeTool, setActiveTool] = useState<Tool>('inspect')
   const [isColorPickerActive, setIsColorPickerActive] = useState(false)
+  const [isColorWheelOpen, setIsColorWheelOpen] = useState(false)
   const [activeColor, setActiveColor] = useState<Color>({ r: 0, g: 0, b: 0, a: 255 })
   const [recentColors, setRecentColors] = useState<Color[]>([{ r: 0, g: 0, b: 0, a: 255 }])
+  const [draftColor, setDraftColor] = useState<Color>({ r: 0, g: 0, b: 0, a: 255 })
+  const [draftHsv, setDraftHsv] = useState(() => rgbToHsv(0, 0, 0))
+  const [wheelDragMode, setWheelDragMode] = useState<'hue' | 'sv' | null>(null)
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
+  const colorWheelCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const documentCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const documentContextRef = useRef<CanvasRenderingContext2D | null>(null)
 
@@ -158,7 +241,7 @@ const App = () => {
     setActiveColor(normalizedColor)
     setRecentColors((previousColors) => {
       const deduped = previousColors.filter((color) => !areColorsEqual(color, normalizedColor))
-      return [normalizedColor, ...deduped].slice(0, MAX_RECENT_COLORS)
+      return [normalizedColor, ...deduped].slice(0, COLOR_WHEEL_RECENT_COLORS)
     })
   }, [])
 
@@ -236,7 +319,7 @@ const App = () => {
       if (changed) {
         setRecentColors((previousColors) => {
           const deduped = previousColors.filter((color) => !areColorsEqual(color, activeColor))
-          return [activeColor, ...deduped].slice(0, MAX_RECENT_COLORS)
+          return [activeColor, ...deduped].slice(0, COLOR_WHEEL_RECENT_COLORS)
         })
       }
     },
@@ -685,6 +768,256 @@ const App = () => {
     setIsColorPickerActive((previousState) => !previousState)
   }
 
+  const openColorWheel = () => {
+    setDraftColor(activeColor)
+    setDraftHsv(rgbToHsv(activeColor.r, activeColor.g, activeColor.b))
+    setWheelDragMode(null)
+    setIsColorWheelOpen(true)
+  }
+
+  const closeColorWheel = () => {
+    setWheelDragMode(null)
+    setIsColorWheelOpen(false)
+  }
+
+  const commitColorWheel = () => {
+    commitActiveColor(draftColor)
+    closeColorWheel()
+  }
+
+  const updateDraftFromHsv = useCallback((h: number, s: number, v: number) => {
+    const normalizedHsv = {
+      h: ((h % 360) + 360) % 360,
+      s: clamp01(s),
+      v: clamp01(v),
+    }
+
+    const rgb = hsvToRgb(normalizedHsv.h, normalizedHsv.s, normalizedHsv.v)
+    setDraftHsv(normalizedHsv)
+    setDraftColor(rgb)
+  }, [])
+
+  const updateDraftFromRgb = useCallback((r: number, g: number, b: number) => {
+    const normalizedRgb = {
+      r: clampColorChannel(r),
+      g: clampColorChannel(g),
+      b: clampColorChannel(b),
+      a: 255,
+    }
+
+    setDraftColor(normalizedRgb)
+    setDraftHsv(rgbToHsv(normalizedRgb.r, normalizedRgb.g, normalizedRgb.b))
+  }, [])
+
+  const readColorWheelSelection = useCallback(
+    (clientX: number, clientY: number) => {
+      const canvas = colorWheelCanvasRef.current
+      if (!canvas) {
+        return null
+      }
+
+      const bounds = canvas.getBoundingClientRect()
+      const localX = clientX - bounds.left
+      const localY = clientY - bounds.top
+      const center = COLOR_WHEEL_SIZE / 2
+      const dx = localX - center
+      const dy = localY - center
+      const distance = Math.hypot(dx, dy)
+
+      const outerRadius = COLOR_WHEEL_SIZE / 2 - 6
+      const innerRadius = outerRadius - HUE_RING_THICKNESS
+
+      if (distance <= outerRadius && distance >= innerRadius) {
+        const angle = Math.atan2(dy, dx)
+        const hue = ((angle * 180) / Math.PI + 360) % 360
+        return { mode: 'hue' as const, h: hue, s: draftHsv.s, v: draftHsv.v }
+      }
+
+      const triangleRadius = innerRadius - TRIANGLE_GAP
+      const top = { x: center, y: center - triangleRadius }
+      const left = { x: center - triangleRadius * 0.8660254, y: center + triangleRadius / 2 }
+      const right = { x: center + triangleRadius * 0.8660254, y: center + triangleRadius / 2 }
+
+      const denominator = (left.y - right.y) * (top.x - right.x) + (right.x - left.x) * (top.y - right.y)
+      if (denominator === 0) {
+        return null
+      }
+
+      const w1 = ((left.y - right.y) * (localX - right.x) + (right.x - left.x) * (localY - right.y)) / denominator
+      const w2 = ((right.y - top.y) * (localX - right.x) + (top.x - right.x) * (localY - right.y)) / denominator
+      const w3 = 1 - w1 - w2
+
+      const inTriangle = w1 >= -0.02 && w2 >= -0.02 && w3 >= -0.02
+      if (!inTriangle) {
+        return null
+      }
+
+      const clampedW1 = clamp01(w1)
+      const clampedW2 = clamp01(w2)
+      const clampedW3 = clamp01(w3)
+      const total = Math.max(0.0001, clampedW1 + clampedW2 + clampedW3)
+
+      const normalizedW1 = clampedW1 / total
+      const normalizedW2 = clampedW2 / total
+      const normalizedW3 = clampedW3 / total
+
+      const value = clamp01(normalizedW1 + normalizedW2)
+      const saturation = value > 0 ? clamp01(normalizedW1 / value) : 0
+
+      return { mode: 'sv' as const, h: draftHsv.h, s: saturation, v: value }
+    },
+    [draftHsv.h, draftHsv.s, draftHsv.v],
+  )
+
+  const handleColorWheelMouseDown = (event: ReactMouseEvent<HTMLCanvasElement>) => {
+    const nextSelection = readColorWheelSelection(event.clientX, event.clientY)
+    if (!nextSelection) {
+      return
+    }
+
+    updateDraftFromHsv(nextSelection.h, nextSelection.s, nextSelection.v)
+    setWheelDragMode(nextSelection.mode)
+  }
+
+  useEffect(() => {
+    if (!wheelDragMode) {
+      return
+    }
+
+    const handleWindowMove = (event: MouseEvent) => {
+      const nextSelection = readColorWheelSelection(event.clientX, event.clientY)
+      if (!nextSelection) {
+        return
+      }
+
+      if (wheelDragMode === 'hue') {
+        updateDraftFromHsv(nextSelection.h, draftHsv.s, draftHsv.v)
+      } else {
+        updateDraftFromHsv(draftHsv.h, nextSelection.s, nextSelection.v)
+      }
+    }
+
+    const handleWindowUp = () => {
+      setWheelDragMode(null)
+    }
+
+    window.addEventListener('mousemove', handleWindowMove)
+    window.addEventListener('mouseup', handleWindowUp)
+
+    return () => {
+      window.removeEventListener('mousemove', handleWindowMove)
+      window.removeEventListener('mouseup', handleWindowUp)
+    }
+  }, [draftHsv.h, draftHsv.s, draftHsv.v, readColorWheelSelection, updateDraftFromHsv, wheelDragMode])
+
+  useEffect(() => {
+    if (!isColorWheelOpen) {
+      return
+    }
+
+    const canvas = colorWheelCanvasRef.current
+    if (!canvas) {
+      return
+    }
+
+    canvas.width = COLOR_WHEEL_SIZE
+    canvas.height = COLOR_WHEEL_SIZE
+
+    const context = canvas.getContext('2d')
+    if (!context) {
+      return
+    }
+
+    const center = COLOR_WHEEL_SIZE / 2
+    const outerRadius = COLOR_WHEEL_SIZE / 2 - 6
+    const innerRadius = outerRadius - HUE_RING_THICKNESS
+
+    context.clearRect(0, 0, COLOR_WHEEL_SIZE, COLOR_WHEEL_SIZE)
+
+    for (let degrees = 0; degrees < 360; degrees += 1) {
+      const start = (degrees * Math.PI) / 180
+      const end = ((degrees + 1) * Math.PI) / 180
+      context.beginPath()
+      context.arc(center, center, outerRadius, start, end)
+      context.arc(center, center, innerRadius, end, start, true)
+      context.closePath()
+      context.fillStyle = `hsl(${degrees}, 100%, 50%)`
+      context.fill()
+    }
+
+    const triangleRadius = innerRadius - TRIANGLE_GAP
+    const top = { x: center, y: center - triangleRadius }
+    const left = { x: center - triangleRadius * 0.8660254, y: center + triangleRadius / 2 }
+    const right = { x: center + triangleRadius * 0.8660254, y: center + triangleRadius / 2 }
+
+    const imageData = context.createImageData(COLOR_WHEEL_SIZE, COLOR_WHEEL_SIZE)
+    const pixels = imageData.data
+
+    const denominator = (left.y - right.y) * (top.x - right.x) + (right.x - left.x) * (top.y - right.y)
+
+    for (let y = 0; y < COLOR_WHEEL_SIZE; y += 1) {
+      for (let x = 0; x < COLOR_WHEEL_SIZE; x += 1) {
+        const w1 = ((left.y - right.y) * (x - right.x) + (right.x - left.x) * (y - right.y)) / denominator
+        const w2 = ((right.y - top.y) * (x - right.x) + (top.x - right.x) * (y - right.y)) / denominator
+        const w3 = 1 - w1 - w2
+
+        if (w1 < 0 || w2 < 0 || w3 < 0) {
+          continue
+        }
+
+        const value = clamp01(w1 + w2)
+        const saturation = value > 0 ? clamp01(w1 / value) : 0
+        const rgb = hsvToRgb(draftHsv.h, saturation, value)
+        const index = (y * COLOR_WHEEL_SIZE + x) * 4
+        pixels[index] = rgb.r
+        pixels[index + 1] = rgb.g
+        pixels[index + 2] = rgb.b
+        pixels[index + 3] = 255
+      }
+    }
+
+    context.putImageData(imageData, 0, 0)
+
+    context.strokeStyle = '#11151f'
+    context.lineWidth = 1
+    context.beginPath()
+    context.moveTo(top.x, top.y)
+    context.lineTo(right.x, right.y)
+    context.lineTo(left.x, left.y)
+    context.closePath()
+    context.stroke()
+
+    const hueRadians = (draftHsv.h * Math.PI) / 180
+    const hueRadius = (innerRadius + outerRadius) / 2
+    const huePointer = {
+      x: center + Math.cos(hueRadians) * hueRadius,
+      y: center + Math.sin(hueRadians) * hueRadius,
+    }
+
+    const value = draftHsv.v
+    const saturation = draftHsv.s
+    const w1 = saturation * value
+    const w2 = value - w1
+    const w3 = 1 - value
+    const svPointer = {
+      x: top.x * w1 + left.x * w2 + right.x * w3,
+      y: top.y * w1 + left.y * w2 + right.y * w3,
+    }
+
+    context.fillStyle = '#ffffff'
+    context.strokeStyle = '#141820'
+    context.lineWidth = 2
+    context.beginPath()
+    context.arc(huePointer.x, huePointer.y, 5, 0, Math.PI * 2)
+    context.fill()
+    context.stroke()
+
+    context.beginPath()
+    context.arc(svPointer.x, svPointer.y, 5, 0, Math.PI * 2)
+    context.fill()
+    context.stroke()
+  }, [draftHsv.h, draftHsv.s, draftHsv.v, isColorWheelOpen])
+
   const directoryPathLabel = currentPath.length > 0 ? `/${currentPath.join('/')}` : '/'
 
   return (
@@ -721,7 +1054,9 @@ const App = () => {
         <section className="tools-section">
           <h3 className="tools-title">Color</h3>
           <div className="color-tools-row">
-            <button className="tool-button">Color Wheel</button>
+            <button className="tool-button" onClick={openColorWheel}>
+              Color Wheel
+            </button>
             <button
               className={`tool-button ${isColorPickerActive ? 'active' : ''}`}
               onClick={handleColorPickerClick}
@@ -733,7 +1068,7 @@ const App = () => {
             <span className="recent-title">Recent</span>
           </div>
           <div className="recent-colors-row">
-            {Array.from({ length: MAX_RECENT_COLORS }).map((_, index) => {
+            {Array.from({ length: SIDEBAR_RECENT_COLORS }).map((_, index) => {
               const color = recentColors[index]
               const isActive = color ? areColorsEqual(color, activeColor) : false
               const colorKey = color ? colorToKey(color) : `empty-${index}`
@@ -836,6 +1171,122 @@ const App = () => {
                 disabled={!selectedAsset}
               >
                 Load
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isColorWheelOpen ? (
+        <div className="modal-overlay">
+          <div className="color-wheel-modal-window">
+            <h2 className="modal-title">Choose a Color</h2>
+
+            <div className="color-wheel-layout">
+              <div className="color-wheel-left-panel">
+                <canvas
+                  ref={colorWheelCanvasRef}
+                  className="color-wheel-canvas"
+                  onMouseDown={handleColorWheelMouseDown}
+                  aria-label="HSV color wheel"
+                />
+                <div className="color-preview-strip" style={{ backgroundColor: colorToCss(draftColor) }} />
+              </div>
+
+              <div className="color-wheel-right-panel">
+                <div className="channel-grid">
+                  <label className="channel-row">
+                    <span>R</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={255}
+                      value={draftColor.r}
+                      onChange={(event) => updateDraftFromRgb(Number(event.target.value), draftColor.g, draftColor.b)}
+                    />
+                  </label>
+                  <label className="channel-row">
+                    <span>G</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={255}
+                      value={draftColor.g}
+                      onChange={(event) => updateDraftFromRgb(draftColor.r, Number(event.target.value), draftColor.b)}
+                    />
+                  </label>
+                  <label className="channel-row">
+                    <span>B</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={255}
+                      value={draftColor.b}
+                      onChange={(event) => updateDraftFromRgb(draftColor.r, draftColor.g, Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="channel-row">
+                    <span>H</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={360}
+                      value={Math.round(draftHsv.h)}
+                      onChange={(event) => updateDraftFromHsv(Number(event.target.value), draftHsv.s, draftHsv.v)}
+                    />
+                  </label>
+                  <label className="channel-row">
+                    <span>S</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={Math.round(draftHsv.s * 100)}
+                      onChange={(event) =>
+                        updateDraftFromHsv(draftHsv.h, Number(event.target.value) / 100, draftHsv.v)
+                      }
+                    />
+                  </label>
+                  <label className="channel-row">
+                    <span>V</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={Math.round(draftHsv.v * 100)}
+                      onChange={(event) =>
+                        updateDraftFromHsv(draftHsv.h, draftHsv.s, Number(event.target.value) / 100)
+                      }
+                    />
+                  </label>
+                </div>
+
+                <section className="expanded-recent-list">
+                  <h3 className="tools-title">Recent Colors</h3>
+                  <div className="expanded-recent-grid">
+                    {recentColors.map((color, index) => (
+                      <button
+                        key={`${colorToKey(color)}-${index}`}
+                        className={`recent-color-swatch ${areColorsEqual(color, draftColor) ? 'active' : ''}`}
+                        style={{ backgroundColor: colorToCss(color) }}
+                        onClick={() => {
+                          setDraftColor(color)
+                          setDraftHsv(rgbToHsv(color.r, color.g, color.b))
+                        }}
+                        aria-label={`Use recent color ${index + 1}`}
+                      />
+                    ))}
+                  </div>
+                </section>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button className="cancel-button" onClick={closeColorWheel}>
+                Cancel
+              </button>
+              <button className="confirm-load-button enabled" onClick={commitColorWheel}>
+                Confirm
               </button>
             </div>
           </div>
