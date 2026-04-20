@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import './App.css'
 
 type AssetFile = {
@@ -84,6 +84,7 @@ const App = () => {
   const [viewportSize, setViewportSize] = useState({ width: 1, height: 1 })
   const [zoom, setZoom] = useState(16)
   const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [isGridVisible, setIsGridVisible] = useState(true)
   const [dragState, setDragState] = useState<
     | {
         startX: number
@@ -200,7 +201,13 @@ const App = () => {
 
     context.imageSmoothingEnabled = false
 
-    const pixelSize = zoom
+    const snapToDevicePixel = (value: number) => Math.round(value * dpr) / dpr
+
+    const pixelSize = Math.max(1 / dpr, snapToDevicePixel(zoom))
+    const drawPan = {
+      x: snapToDevicePixel(pan.x),
+      y: snapToDevicePixel(pan.y),
+    }
 
     for (let y = 0; y < pixelDocument.height; y += 1) {
       for (let x = 0; x < pixelDocument.width; x += 1) {
@@ -211,34 +218,36 @@ const App = () => {
         const alpha = pixelDocument.pixels[index + 3] / 255
 
         context.fillStyle = `rgba(${red}, ${green}, ${blue}, ${alpha})`
-        context.fillRect(pan.x + x * pixelSize, pan.y + y * pixelSize, pixelSize, pixelSize)
+        context.fillRect(drawPan.x + x * pixelSize, drawPan.y + y * pixelSize, pixelSize, pixelSize)
       }
     }
 
-    if (pixelSize >= 8) {
+    if (isGridVisible && pixelSize >= 8) {
       context.strokeStyle = 'rgba(20, 23, 31, 0.4)'
       context.lineWidth = 1
       context.beginPath()
 
       for (let x = 0; x <= pixelDocument.width; x += 1) {
-        const lineX = pan.x + x * pixelSize
-        context.moveTo(lineX + 0.5, pan.y + 0.5)
-        context.lineTo(lineX + 0.5, pan.y + pixelDocument.height * pixelSize + 0.5)
+        const lineX = drawPan.x + x * pixelSize
+        context.moveTo(lineX + 0.5, drawPan.y + 0.5)
+        context.lineTo(lineX + 0.5, drawPan.y + pixelDocument.height * pixelSize + 0.5)
       }
 
       for (let y = 0; y <= pixelDocument.height; y += 1) {
-        const lineY = pan.y + y * pixelSize
-        context.moveTo(pan.x + 0.5, lineY + 0.5)
-        context.lineTo(pan.x + pixelDocument.width * pixelSize + 0.5, lineY + 0.5)
+        const lineY = drawPan.y + y * pixelSize
+        context.moveTo(drawPan.x + 0.5, lineY + 0.5)
+        context.lineTo(drawPan.x + pixelDocument.width * pixelSize + 0.5, lineY + 0.5)
       }
 
       context.stroke()
     }
 
-    context.strokeStyle = '#7180a0'
-    context.lineWidth = 2
-    context.strokeRect(pan.x, pan.y, pixelDocument.width * pixelSize, pixelDocument.height * pixelSize)
-  }, [pan.x, pan.y, pixelDocument, viewportSize.height, viewportSize.width, zoom])
+    if (isGridVisible) {
+      context.strokeStyle = '#7180a0'
+      context.lineWidth = 2
+      context.strokeRect(drawPan.x, drawPan.y, pixelDocument.width * pixelSize, pixelDocument.height * pixelSize)
+    }
+  }, [isGridVisible, pan.x, pan.y, pixelDocument, viewportSize.height, viewportSize.width, zoom])
 
   useEffect(() => {
     if (!dragState) {
@@ -264,6 +273,51 @@ const App = () => {
       window.removeEventListener('mouseup', handleMouseUp)
     }
   }, [dragState])
+
+  useEffect(() => {
+    const handleGridToggle = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 'h') {
+        return
+      }
+
+      if (event.repeat) {
+        return
+      }
+
+      setIsGridVisible((previousState) => !previousState)
+    }
+
+    window.addEventListener('keydown', handleGridToggle)
+
+    return () => {
+      window.removeEventListener('keydown', handleGridToggle)
+    }
+  }, [])
+
+  const zoomAtPoint = useCallback(
+    (pointerX: number, pointerY: number, getNextZoom: (previousZoom: number) => number) => {
+    setZoom((previousZoom) => {
+      const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, getNextZoom(previousZoom)))
+
+      if (nextZoom === previousZoom) {
+        return previousZoom
+      }
+
+      setPan((previousPan) => {
+        const worldX = (pointerX - previousPan.x) / previousZoom
+        const worldY = (pointerY - previousPan.y) / previousZoom
+
+        return {
+          x: pointerX - worldX * nextZoom,
+          y: pointerY - worldY * nextZoom,
+        }
+      })
+
+      return nextZoom
+    })
+    },
+    [],
+  )
 
   const openAssetModal = () => {
     setIsAssetModalOpen(true)
@@ -310,21 +364,7 @@ const App = () => {
       const pointerY = event.clientY - bounds.top
       const zoomFactor = Math.exp(-event.deltaY * 0.002)
 
-      setZoom((previousZoom) => {
-        const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, previousZoom * zoomFactor))
-
-        setPan((previousPan) => {
-          const worldX = (pointerX - previousPan.x) / previousZoom
-          const worldY = (pointerY - previousPan.y) / previousZoom
-
-          return {
-            x: pointerX - worldX * nextZoom,
-            y: pointerY - worldY * nextZoom,
-          }
-        })
-
-        return nextZoom
-      })
+      zoomAtPoint(pointerX, pointerY, (previousZoom) => previousZoom * zoomFactor)
     }
 
     viewportElement.addEventListener('wheel', handleWheelZoom, { passive: false })
@@ -332,7 +372,20 @@ const App = () => {
     return () => {
       viewportElement.removeEventListener('wheel', handleWheelZoom)
     }
-  }, [pixelDocument])
+  }, [pixelDocument, zoomAtPoint])
+
+  const handleZoomButton = (zoomDelta: number) => {
+    const viewportElement = viewportRef.current
+
+    if (!viewportElement || !pixelDocument) {
+      return
+    }
+
+    const pointerX = viewportElement.clientWidth / 2
+    const pointerY = viewportElement.clientHeight / 2
+
+    zoomAtPoint(pointerX, pointerY, (previousZoom) => previousZoom + zoomDelta)
+  }
 
   const handleViewportMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (!pixelDocument || event.button !== 0) {
@@ -376,6 +429,14 @@ const App = () => {
             onMouseDown={handleViewportMouseDown}
           >
             <canvas ref={canvasRef} className="pixel-canvas" />
+            <div className="zoom-controls" aria-label="Zoom controls">
+              <button className="zoom-button" onClick={() => handleZoomButton(2)} aria-label="Zoom in">
+                +
+              </button>
+              <button className="zoom-button" onClick={() => handleZoomButton(-2)} aria-label="Zoom out">
+                -
+              </button>
+            </div>
           </div>
         ) : (
           <p className="placeholder-text">No asset loaded yet.</p>
