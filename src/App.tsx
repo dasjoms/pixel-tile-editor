@@ -201,7 +201,13 @@ const App = () => {
 
     context.imageSmoothingEnabled = false
 
-    const pixelSize = zoom
+    const snapToDevicePixel = (value: number) => Math.round(value * dpr) / dpr
+
+    const pixelSize = Math.max(1 / dpr, snapToDevicePixel(zoom))
+    const drawPan = {
+      x: snapToDevicePixel(pan.x),
+      y: snapToDevicePixel(pan.y),
+    }
 
     for (let y = 0; y < pixelDocument.height; y += 1) {
       for (let x = 0; x < pixelDocument.width; x += 1) {
@@ -212,7 +218,7 @@ const App = () => {
         const alpha = pixelDocument.pixels[index + 3] / 255
 
         context.fillStyle = `rgba(${red}, ${green}, ${blue}, ${alpha})`
-        context.fillRect(pan.x + x * pixelSize, pan.y + y * pixelSize, pixelSize, pixelSize)
+        context.fillRect(drawPan.x + x * pixelSize, drawPan.y + y * pixelSize, pixelSize, pixelSize)
       }
     }
 
@@ -222,15 +228,15 @@ const App = () => {
       context.beginPath()
 
       for (let x = 0; x <= pixelDocument.width; x += 1) {
-        const lineX = pan.x + x * pixelSize
-        context.moveTo(lineX + 0.5, pan.y + 0.5)
-        context.lineTo(lineX + 0.5, pan.y + pixelDocument.height * pixelSize + 0.5)
+        const lineX = drawPan.x + x * pixelSize
+        context.moveTo(lineX + 0.5, drawPan.y + 0.5)
+        context.lineTo(lineX + 0.5, drawPan.y + pixelDocument.height * pixelSize + 0.5)
       }
 
       for (let y = 0; y <= pixelDocument.height; y += 1) {
-        const lineY = pan.y + y * pixelSize
-        context.moveTo(pan.x + 0.5, lineY + 0.5)
-        context.lineTo(pan.x + pixelDocument.width * pixelSize + 0.5, lineY + 0.5)
+        const lineY = drawPan.y + y * pixelSize
+        context.moveTo(drawPan.x + 0.5, lineY + 0.5)
+        context.lineTo(drawPan.x + pixelDocument.width * pixelSize + 0.5, lineY + 0.5)
       }
 
       context.stroke()
@@ -239,7 +245,7 @@ const App = () => {
     if (isGridVisible) {
       context.strokeStyle = '#7180a0'
       context.lineWidth = 2
-      context.strokeRect(pan.x, pan.y, pixelDocument.width * pixelSize, pixelDocument.height * pixelSize)
+      context.strokeRect(drawPan.x, drawPan.y, pixelDocument.width * pixelSize, pixelDocument.height * pixelSize)
     }
   }, [isGridVisible, pan.x, pan.y, pixelDocument, viewportSize.height, viewportSize.width, zoom])
 
