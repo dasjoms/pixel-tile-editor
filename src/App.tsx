@@ -869,6 +869,26 @@ const App = () => {
     [draftHsv.h, draftHsv.s, draftHsv.v],
   )
 
+  const readHueFromPointer = useCallback((clientX: number, clientY: number) => {
+    const canvas = colorWheelCanvasRef.current
+    if (!canvas) {
+      return null
+    }
+
+    const bounds = canvas.getBoundingClientRect()
+    const localX = clientX - bounds.left
+    const localY = clientY - bounds.top
+    const center = COLOR_WHEEL_SIZE / 2
+    const dx = localX - center
+    const dy = localY - center
+
+    if (dx === 0 && dy === 0) {
+      return null
+    }
+
+    return ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360
+  }, [])
+
   const handleColorWheelMouseDown = (event: ReactMouseEvent<HTMLCanvasElement>) => {
     const nextSelection = readColorWheelSelection(event.clientX, event.clientY)
     if (!nextSelection) {
@@ -885,16 +905,22 @@ const App = () => {
     }
 
     const handleWindowMove = (event: MouseEvent) => {
-      const nextSelection = readColorWheelSelection(event.clientX, event.clientY)
-      if (!nextSelection) {
+      if (wheelDragMode === 'hue') {
+        const nextHue = readHueFromPointer(event.clientX, event.clientY)
+        if (nextHue === null) {
+          return
+        }
+
+        updateDraftFromHsv(nextHue, draftHsv.s, draftHsv.v)
         return
       }
 
-      if (wheelDragMode === 'hue') {
-        updateDraftFromHsv(nextSelection.h, draftHsv.s, draftHsv.v)
-      } else {
-        updateDraftFromHsv(draftHsv.h, nextSelection.s, nextSelection.v)
+      const nextSelection = readColorWheelSelection(event.clientX, event.clientY)
+      if (!nextSelection || nextSelection.mode !== 'sv') {
+        return
       }
+
+      updateDraftFromHsv(draftHsv.h, nextSelection.s, nextSelection.v)
     }
 
     const handleWindowUp = () => {
@@ -908,7 +934,7 @@ const App = () => {
       window.removeEventListener('mousemove', handleWindowMove)
       window.removeEventListener('mouseup', handleWindowUp)
     }
-  }, [draftHsv.h, draftHsv.s, draftHsv.v, readColorWheelSelection, updateDraftFromHsv, wheelDragMode])
+  }, [draftHsv.h, draftHsv.s, draftHsv.v, readColorWheelSelection, readHueFromPointer, updateDraftFromHsv, wheelDragMode])
 
   useEffect(() => {
     if (!isColorWheelOpen) {
@@ -933,17 +959,6 @@ const App = () => {
     const innerRadius = outerRadius - HUE_RING_THICKNESS
 
     context.clearRect(0, 0, COLOR_WHEEL_SIZE, COLOR_WHEEL_SIZE)
-
-    for (let degrees = 0; degrees < 360; degrees += 1) {
-      const start = (degrees * Math.PI) / 180
-      const end = ((degrees + 1) * Math.PI) / 180
-      context.beginPath()
-      context.arc(center, center, outerRadius, start, end)
-      context.arc(center, center, innerRadius, end, start, true)
-      context.closePath()
-      context.fillStyle = `hsl(${degrees}, 100%, 50%)`
-      context.fill()
-    }
 
     const triangleRadius = innerRadius - TRIANGLE_GAP
     const top = { x: center, y: center - triangleRadius }
@@ -977,6 +992,17 @@ const App = () => {
     }
 
     context.putImageData(imageData, 0, 0)
+
+    for (let degrees = 0; degrees < 360; degrees += 1) {
+      const start = (degrees * Math.PI) / 180
+      const end = ((degrees + 1) * Math.PI) / 180
+      context.beginPath()
+      context.arc(center, center, outerRadius, start, end)
+      context.arc(center, center, innerRadius, end, start, true)
+      context.closePath()
+      context.fillStyle = `hsl(${degrees}, 100%, 50%)`
+      context.fill()
+    }
 
     context.strokeStyle = '#11151f'
     context.lineWidth = 1
