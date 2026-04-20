@@ -37,6 +37,10 @@ body {
   padding: 10px 12px;
 }
 
+.save-button {
+  margin-top: auto;
+}
+
 .tools-section {
   border: 1px solid #333847;
   border-radius: 10px;
@@ -258,6 +262,14 @@ body {
   transform: scale(1.05);
 }
 
+.existing-file-card {
+  cursor: default;
+}
+
+.existing-file-card:hover {
+  transform: none;
+}
+
 .file-preview-button.selected {
   border-color: #5ec3ff;
 }
@@ -285,8 +297,43 @@ body {
 
 .modal-footer {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.save-controls-row {
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.save-filename-input,
+.upscale-factor-input {
+  border: 1px solid #404757;
+  border-radius: 6px;
+  background-color: #232733;
+  color: #eef1fa;
+}
+
+.save-filename-input {
+  min-width: 220px;
+  padding: 9px 10px;
+}
+
+.upscale-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #dce1ef;
+  font-size: 14px;
+}
+
+.upscale-factor-input {
+  width: 90px;
+  padding: 7px 8px;
 }
 
 .cancel-button,
