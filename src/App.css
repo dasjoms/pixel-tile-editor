@@ -61,6 +61,12 @@ body {
   gap: 6px;
 }
 
+.history-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
 .tool-button {
   border: 1px solid #3b4150;
   border-radius: 8px;
@@ -80,6 +86,10 @@ body {
   border-color: #5ec3ff;
   background-color: #263244;
   color: #eff8ff;
+}
+
+.tool-button:disabled {
+  opacity: 0.5;
 }
 
 .main-area {
