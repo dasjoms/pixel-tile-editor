@@ -15,8 +15,21 @@ type PixelDocument = {
   pixels: Uint8ClampedArray
 }
 
+type Color = {
+  r: number
+  g: number
+  b: number
+  a: number
+}
+
+type PixelPosition = {
+  x: number
+  y: number
+}
+
 const MIN_ZOOM = 2
 const MAX_ZOOM = 64
+const MAX_RECENT_COLORS = 5
 
 const assetModules = import.meta.glob('../assets/**/*.png', {
   eager: true,
@@ -71,20 +84,50 @@ const loadPixelDocument = async (assetUrl: string): Promise<PixelDocument> => {
   }
 }
 
+const clampColorChannel = (value: number) => Math.max(0, Math.min(255, Math.round(value)))
+
+const areColorsEqual = (left: Color, right: Color) =>
+  left.r === right.r && left.g === right.g && left.b === right.b && left.a === right.a
+
+const colorToCss = (color: Color) => `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a / 255})`
+
+const colorToKey = (color: Color) => `${color.r}-${color.g}-${color.b}-${color.a}`
+
+const getDocumentPixel = (document: PixelDocument, x: number, y: number): Color => {
+  const index = (y * document.width + x) * 4
+
+  return {
+    r: document.pixels[index],
+    g: document.pixels[index + 1],
+    b: document.pixels[index + 2],
+    a: document.pixels[index + 3],
+  }
+}
+
 const App = () => {
   const [isAssetModalOpen, setIsAssetModalOpen] = useState(false)
   const [currentPath, setCurrentPath] = useState<string[]>([])
   const [selectedAssetKey, setSelectedAssetKey] = useState<string | null>(null)
   const [pixelDocument, setPixelDocument] = useState<PixelDocument | null>(null)
-  const [activeTool] = useState<Tool>('inspect')
+  const [activeTool, setActiveTool] = useState<Tool>('inspect')
+  const [isColorPickerActive, setIsColorPickerActive] = useState(false)
+  const [activeColor, setActiveColor] = useState<Color>({ r: 0, g: 0, b: 0, a: 255 })
+  const [recentColors, setRecentColors] = useState<Color[]>([{ r: 0, g: 0, b: 0, a: 255 }])
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
+  const documentCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const documentContextRef = useRef<CanvasRenderingContext2D | null>(null)
+
+  const pixelDocumentRef = useRef<PixelDocument | null>(null)
+  const [documentRenderVersion, setDocumentRenderVersion] = useState(0)
 
   const [viewportSize, setViewportSize] = useState({ width: 1, height: 1 })
   const [zoom, setZoom] = useState(16)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [isGridVisible, setIsGridVisible] = useState(true)
+  const [hoverPixel, setHoverPixel] = useState<PixelPosition | null>(null)
+
   const [dragState, setDragState] = useState<
     | {
         startX: number
@@ -94,6 +137,111 @@ const App = () => {
       }
     | null
   >(null)
+
+  const [paintDragState, setPaintDragState] = useState<{ isDrawing: boolean; lastPixelKey: string | null }>({
+    isDrawing: false,
+    lastPixelKey: null,
+  })
+
+  useEffect(() => {
+    pixelDocumentRef.current = pixelDocument
+  }, [pixelDocument])
+
+  const commitActiveColor = useCallback((nextColor: Color) => {
+    const normalizedColor = {
+      r: clampColorChannel(nextColor.r),
+      g: clampColorChannel(nextColor.g),
+      b: clampColorChannel(nextColor.b),
+      a: clampColorChannel(nextColor.a),
+    }
+
+    setActiveColor(normalizedColor)
+    setRecentColors((previousColors) => {
+      const deduped = previousColors.filter((color) => !areColorsEqual(color, normalizedColor))
+      return [normalizedColor, ...deduped].slice(0, MAX_RECENT_COLORS)
+    })
+  }, [])
+
+  const setPixelColor = useCallback((position: PixelPosition, color: Color) => {
+    const document = pixelDocumentRef.current
+
+    if (!document) {
+      return false
+    }
+
+    if (position.x < 0 || position.x >= document.width || position.y < 0 || position.y >= document.height) {
+      return false
+    }
+
+    const index = (position.y * document.width + position.x) * 4
+    const nextR = clampColorChannel(color.r)
+    const nextG = clampColorChannel(color.g)
+    const nextB = clampColorChannel(color.b)
+    const nextA = clampColorChannel(color.a)
+
+    if (
+      document.pixels[index] === nextR &&
+      document.pixels[index + 1] === nextG &&
+      document.pixels[index + 2] === nextB &&
+      document.pixels[index + 3] === nextA
+    ) {
+      return false
+    }
+
+    document.pixels[index] = nextR
+    document.pixels[index + 1] = nextG
+    document.pixels[index + 2] = nextB
+    document.pixels[index + 3] = nextA
+
+    const documentContext = documentContextRef.current
+    if (documentContext) {
+      documentContext.clearRect(position.x, position.y, 1, 1)
+      documentContext.fillStyle = colorToCss({ r: nextR, g: nextG, b: nextB, a: nextA })
+      documentContext.fillRect(position.x, position.y, 1, 1)
+    }
+
+    setDocumentRenderVersion((version) => version + 1)
+    return true
+  }, [])
+
+  const getPixelFromClientPoint = useCallback(
+    (clientX: number, clientY: number): PixelPosition | null => {
+      const viewportElement = viewportRef.current
+      const document = pixelDocumentRef.current
+
+      if (!viewportElement || !document) {
+        return null
+      }
+
+      const bounds = viewportElement.getBoundingClientRect()
+      const localX = clientX - bounds.left
+      const localY = clientY - bounds.top
+
+      const pixelX = Math.floor((localX - pan.x) / zoom)
+      const pixelY = Math.floor((localY - pan.y) / zoom)
+
+      if (pixelX < 0 || pixelX >= document.width || pixelY < 0 || pixelY >= document.height) {
+        return null
+      }
+
+      return { x: pixelX, y: pixelY }
+    },
+    [pan.x, pan.y, zoom],
+  )
+
+  const drawPaintPixel = useCallback(
+    (position: PixelPosition) => {
+      const changed = setPixelColor(position, activeColor)
+
+      if (changed) {
+        setRecentColors((previousColors) => {
+          const deduped = previousColors.filter((color) => !areColorsEqual(color, activeColor))
+          return [activeColor, ...deduped].slice(0, MAX_RECENT_COLORS)
+        })
+      }
+    },
+    [activeColor, setPixelColor],
+  )
 
   const { directories, files } = useMemo(() => {
     const prefix = currentPath.length > 0 ? `${currentPath.join('/')}/` : ''
@@ -155,6 +303,35 @@ const App = () => {
 
   useEffect(() => {
     if (!pixelDocument) {
+      documentCanvasRef.current = null
+      documentContextRef.current = null
+      return
+    }
+
+    const bufferCanvas = document.createElement('canvas')
+    bufferCanvas.width = pixelDocument.width
+    bufferCanvas.height = pixelDocument.height
+
+    const bufferContext = bufferCanvas.getContext('2d')
+
+    if (!bufferContext) {
+      throw new Error('Canvas context unavailable.')
+    }
+
+    const imageData = new ImageData(
+      new Uint8ClampedArray(pixelDocument.pixels),
+      pixelDocument.width,
+      pixelDocument.height,
+    )
+
+    bufferContext.putImageData(imageData, 0, 0)
+    documentCanvasRef.current = bufferCanvas
+    documentContextRef.current = bufferContext
+    setDocumentRenderVersion((version) => version + 1)
+  }, [pixelDocument])
+
+  useEffect(() => {
+    if (!pixelDocument) {
       return
     }
 
@@ -209,17 +386,15 @@ const App = () => {
       y: snapToDevicePixel(pan.y),
     }
 
-    for (let y = 0; y < pixelDocument.height; y += 1) {
-      for (let x = 0; x < pixelDocument.width; x += 1) {
-        const index = (y * pixelDocument.width + x) * 4
-        const red = pixelDocument.pixels[index]
-        const green = pixelDocument.pixels[index + 1]
-        const blue = pixelDocument.pixels[index + 2]
-        const alpha = pixelDocument.pixels[index + 3] / 255
-
-        context.fillStyle = `rgba(${red}, ${green}, ${blue}, ${alpha})`
-        context.fillRect(drawPan.x + x * pixelSize, drawPan.y + y * pixelSize, pixelSize, pixelSize)
-      }
+    const documentCanvas = documentCanvasRef.current
+    if (documentCanvas) {
+      context.drawImage(
+        documentCanvas,
+        drawPan.x,
+        drawPan.y,
+        pixelDocument.width * pixelSize,
+        pixelDocument.height * pixelSize,
+      )
     }
 
     if (isGridVisible && pixelSize >= 8) {
@@ -242,12 +417,23 @@ const App = () => {
       context.stroke()
     }
 
+    if (activeTool === 'paint' && hoverPixel) {
+      context.strokeStyle = '#ffffff'
+      context.lineWidth = 1
+      context.strokeRect(
+        drawPan.x + hoverPixel.x * pixelSize + 0.5,
+        drawPan.y + hoverPixel.y * pixelSize + 0.5,
+        Math.max(pixelSize - 1, 1),
+        Math.max(pixelSize - 1, 1),
+      )
+    }
+
     if (isGridVisible) {
       context.strokeStyle = '#7180a0'
       context.lineWidth = 2
       context.strokeRect(drawPan.x, drawPan.y, pixelDocument.width * pixelSize, pixelDocument.height * pixelSize)
     }
-  }, [isGridVisible, pan.x, pan.y, pixelDocument, viewportSize.height, viewportSize.width, zoom])
+  }, [documentRenderVersion, hoverPixel, isGridVisible, pan.x, pan.y, pixelDocument, viewportSize.height, viewportSize.width, zoom, activeTool])
 
   useEffect(() => {
     if (!dragState) {
@@ -275,6 +461,48 @@ const App = () => {
   }, [dragState])
 
   useEffect(() => {
+    if (!paintDragState.isDrawing) {
+      return
+    }
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const pixel = getPixelFromClientPoint(event.clientX, event.clientY)
+      setHoverPixel(pixel)
+
+      if (!pixel) {
+        return
+      }
+
+      const pixelKey = `${pixel.x},${pixel.y}`
+
+      setPaintDragState((previousState) => {
+        if (previousState.lastPixelKey === pixelKey) {
+          return previousState
+        }
+
+        drawPaintPixel(pixel)
+
+        return {
+          ...previousState,
+          lastPixelKey: pixelKey,
+        }
+      })
+    }
+
+    const handleMouseUp = () => {
+      setPaintDragState({ isDrawing: false, lastPixelKey: null })
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [drawPaintPixel, getPixelFromClientPoint, paintDragState.isDrawing])
+
+  useEffect(() => {
     const handleGridToggle = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() !== 'h') {
         return
@@ -296,25 +524,25 @@ const App = () => {
 
   const zoomAtPoint = useCallback(
     (pointerX: number, pointerY: number, getNextZoom: (previousZoom: number) => number) => {
-    setZoom((previousZoom) => {
-      const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, getNextZoom(previousZoom)))
+      setZoom((previousZoom) => {
+        const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, getNextZoom(previousZoom)))
 
-      if (nextZoom === previousZoom) {
-        return previousZoom
-      }
-
-      setPan((previousPan) => {
-        const worldX = (pointerX - previousPan.x) / previousZoom
-        const worldY = (pointerY - previousPan.y) / previousZoom
-
-        return {
-          x: pointerX - worldX * nextZoom,
-          y: pointerY - worldY * nextZoom,
+        if (nextZoom === previousZoom) {
+          return previousZoom
         }
-      })
 
-      return nextZoom
-    })
+        setPan((previousPan) => {
+          const worldX = (pointerX - previousPan.x) / previousZoom
+          const worldY = (pointerY - previousPan.y) / previousZoom
+
+          return {
+            x: pointerX - worldX * nextZoom,
+            y: pointerY - worldY * nextZoom,
+          }
+        })
+
+        return nextZoom
+      })
     },
     [],
   )
@@ -346,6 +574,8 @@ const App = () => {
 
     const document = await loadPixelDocument(selectedAsset.url)
     setPixelDocument(document)
+    setHoverPixel(null)
+    setPaintDragState({ isDrawing: false, lastPixelKey: null })
     closeAssetModal()
   }
 
@@ -387,19 +617,72 @@ const App = () => {
     zoomAtPoint(pointerX, pointerY, (previousZoom) => previousZoom + zoomDelta)
   }
 
+  const handleViewportMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (activeTool !== 'paint' || !pixelDocument) {
+      setHoverPixel(null)
+      return
+    }
+
+    setHoverPixel(getPixelFromClientPoint(event.clientX, event.clientY))
+  }
+
+  const handleViewportMouseLeave = () => {
+    setHoverPixel(null)
+  }
+
   const handleViewportMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (!pixelDocument || event.button !== 0) {
       return
     }
 
-    event.preventDefault()
+    if (isColorPickerActive) {
+      const pixel = getPixelFromClientPoint(event.clientX, event.clientY)
+      if (!pixel) {
+        return
+      }
 
-    setDragState({
-      startX: event.clientX,
-      startY: event.clientY,
-      originX: pan.x,
-      originY: pan.y,
-    })
+      const color = getDocumentPixel(pixelDocument, pixel.x, pixel.y)
+      commitActiveColor(color)
+      setIsColorPickerActive(false)
+      event.preventDefault()
+      return
+    }
+
+    if (activeTool === 'paint') {
+      const pixel = getPixelFromClientPoint(event.clientX, event.clientY)
+      if (!pixel) {
+        return
+      }
+
+      event.preventDefault()
+      drawPaintPixel(pixel)
+      setPaintDragState({ isDrawing: true, lastPixelKey: `${pixel.x},${pixel.y}` })
+      setHoverPixel(pixel)
+      return
+    }
+
+    if (activeTool === 'inspect') {
+      event.preventDefault()
+
+      setDragState({
+        startX: event.clientX,
+        startY: event.clientY,
+        originX: pan.x,
+        originY: pan.y,
+      })
+    }
+  }
+
+  const handleToolSelect = (tool: Tool) => {
+    setActiveTool(tool)
+    if (tool !== 'paint') {
+      setHoverPixel(null)
+      setPaintDragState({ isDrawing: false, lastPixelKey: null })
+    }
+  }
+
+  const handleColorPickerClick = () => {
+    setIsColorPickerActive((previousState) => !previousState)
   }
 
   const directoryPathLabel = currentPath.length > 0 ? `/${currentPath.join('/')}` : '/'
@@ -414,9 +697,66 @@ const App = () => {
         <section className="tools-section">
           <h3 className="tools-title">Tools</h3>
           <div className="tools-row">
-            <button className={`tool-button ${activeTool === 'inspect' ? 'active' : ''}`}>Inspect</button>
-            <button className="tool-button">Paint</button>
-            <button className="tool-button">Erase</button>
+            <button
+              className={`tool-button ${activeTool === 'inspect' ? 'active' : ''}`}
+              onClick={() => handleToolSelect('inspect')}
+            >
+              Inspect
+            </button>
+            <button
+              className={`tool-button ${activeTool === 'paint' ? 'active' : ''}`}
+              onClick={() => handleToolSelect('paint')}
+            >
+              Paint
+            </button>
+            <button
+              className={`tool-button ${activeTool === 'erase' ? 'active' : ''}`}
+              onClick={() => handleToolSelect('erase')}
+            >
+              Erase
+            </button>
+          </div>
+        </section>
+
+        <section className="tools-section">
+          <h3 className="tools-title">Color</h3>
+          <div className="color-tools-row">
+            <button className="tool-button">Color Wheel</button>
+            <button
+              className={`tool-button ${isColorPickerActive ? 'active' : ''}`}
+              onClick={handleColorPickerClick}
+            >
+              Color Picker
+            </button>
+          </div>
+          <div className="recent-header-row">
+            <span className="recent-title">Recent</span>
+          </div>
+          <div className="recent-colors-row">
+            {Array.from({ length: MAX_RECENT_COLORS }).map((_, index) => {
+              const color = recentColors[index]
+              const isActive = color ? areColorsEqual(color, activeColor) : false
+              const colorKey = color ? colorToKey(color) : `empty-${index}`
+
+              return (
+                <button
+                  key={colorKey}
+                  className={`recent-color-swatch ${isActive ? 'active' : ''}`}
+                  style={
+                    color
+                      ? { backgroundColor: colorToCss(color) }
+                      : undefined
+                  }
+                  disabled={!color}
+                  onClick={() => {
+                    if (color) {
+                      commitActiveColor(color)
+                    }
+                  }}
+                  aria-label={color ? `Use recent color ${index + 1}` : `Empty recent color slot ${index + 1}`}
+                />
+              )
+            })}
           </div>
         </section>
       </aside>
@@ -425,8 +765,10 @@ const App = () => {
         {pixelDocument ? (
           <div
             ref={viewportRef}
-            className="canvas-viewport"
+            className={`canvas-viewport ${activeTool === 'paint' || isColorPickerActive ? 'paint-cursor' : ''}`}
             onMouseDown={handleViewportMouseDown}
+            onMouseMove={handleViewportMouseMove}
+            onMouseLeave={handleViewportMouseLeave}
           >
             <canvas ref={canvasRef} className="pixel-canvas" />
             <div className="zoom-controls" aria-label="Zoom controls">
