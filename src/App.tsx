@@ -777,7 +777,7 @@ const App = () => {
     setSelectedAssetKey(null)
   }
 
-  const openSaveModal = () => {
+  const handleOpenSaveModal = () => {
     setAssetModalMode('save')
     setCurrentPath([])
     setSelectedAssetKey(null)
@@ -785,15 +785,6 @@ const App = () => {
     setShouldSaveUpscaled(false)
     setUpscaleFactor('32')
     setSaveErrorMessage(null)
-  }
-
-  const openSaveModal = () => {
-    setAssetModalMode('save')
-    setCurrentPath([])
-    setSelectedAssetKey(null)
-    setSaveFileName('')
-    setShouldSaveUpscaled(false)
-    setUpscaleFactor('32')
   }
 
   const closeAssetModal = () => {
@@ -1458,7 +1449,7 @@ const App = () => {
           </div>
         </section>
 
-        <button className="load-asset-button save-button" onClick={openSaveModal} disabled={!pixelDocument}>
+        <button className="load-asset-button save-button" onClick={handleOpenSaveModal} disabled={!pixelDocument}>
           Save
         </button>
       </aside>
