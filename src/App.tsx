@@ -787,6 +787,15 @@ const App = () => {
     setSaveErrorMessage(null)
   }
 
+  const openSaveModal = () => {
+    setAssetModalMode('save')
+    setCurrentPath([])
+    setSelectedAssetKey(null)
+    setSaveFileName('')
+    setShouldSaveUpscaled(false)
+    setUpscaleFactor('32')
+  }
+
   const closeAssetModal = () => {
     setAssetModalMode(null)
     setCurrentPath([])

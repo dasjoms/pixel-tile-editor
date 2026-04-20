@@ -343,6 +343,40 @@ body {
   font-size: 13px;
 }
 
+.save-controls-row {
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.save-filename-input,
+.upscale-factor-input {
+  border: 1px solid #404757;
+  border-radius: 6px;
+  background-color: #232733;
+  color: #eef1fa;
+}
+
+.save-filename-input {
+  min-width: 220px;
+  padding: 9px 10px;
+}
+
+.upscale-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #dce1ef;
+  font-size: 14px;
+}
+
+.upscale-factor-input {
+  width: 90px;
+  padding: 7px 8px;
+}
+
 .cancel-button,
 .confirm-load-button {
   border: none;
