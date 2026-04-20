@@ -192,6 +192,7 @@ const App = () => {
   const [saveFileName, setSaveFileName] = useState('')
   const [shouldSaveUpscaled, setShouldSaveUpscaled] = useState(false)
   const [upscaleFactor, setUpscaleFactor] = useState('32')
+  const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null)
   const [pixelDocument, setPixelDocument] = useState<PixelDocument | null>(null)
   const [activeTool, setActiveTool] = useState<Tool>('inspect')
   const [isColorPickerActive, setIsColorPickerActive] = useState(false)
@@ -234,6 +235,7 @@ const App = () => {
   const [historyPast, setHistoryPast] = useState<Uint8ClampedArray[]>([])
   const [historyFuture, setHistoryFuture] = useState<Uint8ClampedArray[]>([])
   const historyTransactionRef = useRef<{ before: Uint8ClampedArray; hasChanges: boolean } | null>(null)
+  const saveRootDirectoryRef = useRef<FileSystemDirectoryHandle | null>(null)
 
   useEffect(() => {
     pixelDocumentRef.current = pixelDocument
@@ -782,12 +784,23 @@ const App = () => {
     setSaveFileName('')
     setShouldSaveUpscaled(false)
     setUpscaleFactor('32')
+    setSaveErrorMessage(null)
+  }
+
+  const openSaveModal = () => {
+    setAssetModalMode('save')
+    setCurrentPath([])
+    setSelectedAssetKey(null)
+    setSaveFileName('')
+    setShouldSaveUpscaled(false)
+    setUpscaleFactor('32')
   }
 
   const closeAssetModal = () => {
     setAssetModalMode(null)
     setCurrentPath([])
     setSelectedAssetKey(null)
+    setSaveErrorMessage(null)
   }
 
   const goUpLayer = () => {
@@ -813,7 +826,7 @@ const App = () => {
     closeAssetModal()
   }
 
-  const buildDocumentPng = useCallback((pixelDoc: PixelDocument, scale: number) => {
+  const buildDocumentPngCanvas = useCallback((pixelDoc: PixelDocument, scale: number) => {
     const baseCanvas = document.createElement('canvas')
     baseCanvas.width = pixelDoc.width
     baseCanvas.height = pixelDoc.height
@@ -827,7 +840,7 @@ const App = () => {
     baseContext.putImageData(imageData, 0, 0)
 
     if (scale <= 1) {
-      return baseCanvas.toDataURL('image/png')
+      return baseCanvas
     }
 
     const upscaledCanvas = document.createElement('canvas')
@@ -841,47 +854,133 @@ const App = () => {
 
     upscaledContext.imageSmoothingEnabled = false
     upscaledContext.drawImage(baseCanvas, 0, 0, upscaledCanvas.width, upscaledCanvas.height)
-    return upscaledCanvas.toDataURL('image/png')
+    return upscaledCanvas
   }, [])
 
-  const saveCurrentAsset = useCallback(() => {
+  const buildCanvasBlob = useCallback(async (canvas: HTMLCanvasElement) => {
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob((result) => resolve(result), 'image/png')
+    })
+
+    if (!blob) {
+      throw new Error('Failed to encode PNG file.')
+    }
+
+    return blob
+  }, [])
+
+  const resolveSaveRootDirectory = useCallback(async () => {
+    const showDirectoryPicker = window.showDirectoryPicker
+
+    if (!showDirectoryPicker) {
+      throw new Error('This browser does not support direct folder saves.')
+    }
+
+    const existingHandle = saveRootDirectoryRef.current
+    if (existingHandle) {
+      const permission = existingHandle.queryPermission
+        ? await existingHandle.queryPermission({ mode: 'readwrite' })
+        : 'granted'
+      if (permission === 'granted') {
+        return existingHandle
+      }
+
+      const requestedPermission = existingHandle.requestPermission
+        ? await existingHandle.requestPermission({ mode: 'readwrite' })
+        : permission
+      if (requestedPermission === 'granted') {
+        return existingHandle
+      }
+    }
+
+    const nextHandle = await showDirectoryPicker({
+      mode: 'readwrite',
+    })
+    saveRootDirectoryRef.current = nextHandle
+    return nextHandle
+  }, [])
+
+  const writeFileToDirectory = useCallback(
+    async (rootDirectory: FileSystemDirectoryHandle, relativePath: string[], fileName: string, contents: Blob) => {
+      let currentDirectory = rootDirectory
+
+      for (const pathPart of relativePath) {
+        currentDirectory = await currentDirectory.getDirectoryHandle(pathPart, { create: true })
+      }
+
+      const fileHandle = await currentDirectory.getFileHandle(fileName, { create: true })
+      const writable = await fileHandle.createWritable()
+      await writable.write(contents)
+      await writable.close()
+    },
+    [],
+  )
+
+  const saveCurrentAsset = useCallback(async () => {
     if (!pixelDocument) {
       return
     }
+
+    setSaveErrorMessage(null)
 
     const fallbackName = `asset_${new Date().toISOString().replace(/[:.]/g, '-')}`
     const normalizedName = saveFileName.trim().replace(/\.png$/i, '').replace(/[\\/:*?"<>|]/g, '_')
     const baseName = normalizedName.length > 0 ? normalizedName : fallbackName
     const keyPrefix = currentPath.length > 0 ? `${currentPath.join('/')}/` : ''
-    const nextAssets: AssetFile[] = [
-      {
-        key: `${keyPrefix}${baseName}.png`,
-        name: `${baseName}.png`,
-        url: buildDocumentPng(pixelDocument, 1),
-      },
-    ]
 
-    if (shouldSaveUpscaled) {
-      const parsedFactor = Number.parseInt(upscaleFactor, 10)
-      const safeFactor = Number.isFinite(parsedFactor) ? Math.max(1, parsedFactor) : 32
-      const upscaleName = `${baseName}_upscaled_${safeFactor}x`
-      nextAssets.push({
-        key: `${keyPrefix}${upscaleName}.png`,
-        name: `${upscaleName}.png`,
-        url: buildDocumentPng(pixelDocument, safeFactor),
+    try {
+      const saveRootDirectory = await resolveSaveRootDirectory()
+      const baseCanvas = buildDocumentPngCanvas(pixelDocument, 1)
+      const baseBlob = await buildCanvasBlob(baseCanvas)
+      await writeFileToDirectory(saveRootDirectory, currentPath, `${baseName}.png`, baseBlob)
+
+      const nextAssets: AssetFile[] = [
+        {
+          key: `${keyPrefix}${baseName}.png`,
+          name: `${baseName}.png`,
+          url: URL.createObjectURL(baseBlob),
+        },
+      ]
+
+      if (shouldSaveUpscaled) {
+        const parsedFactor = Number.parseInt(upscaleFactor, 10)
+        const safeFactor = Number.isFinite(parsedFactor) ? Math.max(1, parsedFactor) : 32
+        const upscaleName = `${baseName}_upscaled_${safeFactor}x`
+        const upscaledCanvas = buildDocumentPngCanvas(pixelDocument, safeFactor)
+        const upscaledBlob = await buildCanvasBlob(upscaledCanvas)
+        await writeFileToDirectory(saveRootDirectory, currentPath, `${upscaleName}.png`, upscaledBlob)
+        nextAssets.push({
+          key: `${keyPrefix}${upscaleName}.png`,
+          name: `${upscaleName}.png`,
+          url: URL.createObjectURL(upscaledBlob),
+        })
+      }
+
+      setSavedAssets((previousAssets) => {
+        const nextByKey = new Map(previousAssets.map((asset) => [asset.key, asset]))
+        nextAssets.forEach((asset) => {
+          nextByKey.set(asset.key, asset)
+        })
+        return Array.from(nextByKey.values()).sort((a, b) => a.key.localeCompare(b.key))
       })
+
+      closeAssetModal()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save files.'
+      setSaveErrorMessage(message)
     }
-
-    setSavedAssets((previousAssets) => {
-      const nextByKey = new Map(previousAssets.map((asset) => [asset.key, asset]))
-      nextAssets.forEach((asset) => {
-        nextByKey.set(asset.key, asset)
-      })
-      return Array.from(nextByKey.values()).sort((a, b) => a.key.localeCompare(b.key))
-    })
-
-    closeAssetModal()
-  }, [buildDocumentPng, closeAssetModal, currentPath, pixelDocument, saveFileName, shouldSaveUpscaled, upscaleFactor])
+  }, [
+    buildCanvasBlob,
+    buildDocumentPngCanvas,
+    closeAssetModal,
+    currentPath,
+    pixelDocument,
+    resolveSaveRootDirectory,
+    saveFileName,
+    shouldSaveUpscaled,
+    upscaleFactor,
+    writeFileToDirectory,
+  ])
 
   useEffect(() => {
     const viewportElement = viewportRef.current
@@ -1463,6 +1562,11 @@ const App = () => {
                     />
                   </label>
                 </div>
+              ) : null}
+              {assetModalMode === 'save' && saveErrorMessage ? (
+                <p className="save-error-text" role="alert">
+                  {saveErrorMessage}
+                </p>
               ) : null}
               <button className="cancel-button" onClick={closeAssetModal}>
                 Cancel
