@@ -225,6 +225,9 @@ const App = () => {
     isDrawing: false,
     lastPixelKey: null,
   })
+  const [historyPast, setHistoryPast] = useState<Uint8ClampedArray[]>([])
+  const [historyFuture, setHistoryFuture] = useState<Uint8ClampedArray[]>([])
+  const historyTransactionRef = useRef<{ before: Uint8ClampedArray; hasChanges: boolean } | null>(null)
 
   useEffect(() => {
     pixelDocumentRef.current = pixelDocument
@@ -244,6 +247,97 @@ const App = () => {
       return [normalizedColor, ...deduped].slice(0, COLOR_WHEEL_RECENT_COLORS)
     })
   }, [])
+
+  const cloneDocumentPixels = useCallback(() => {
+    const document = pixelDocumentRef.current
+    return document ? new Uint8ClampedArray(document.pixels) : null
+  }, [])
+
+  const beginHistoryStep = useCallback(() => {
+    if (historyTransactionRef.current) {
+      return
+    }
+
+    const before = cloneDocumentPixels()
+    if (!before) {
+      return
+    }
+
+    historyTransactionRef.current = {
+      before,
+      hasChanges: false,
+    }
+  }, [cloneDocumentPixels])
+
+  const clearHistoryTransaction = useCallback(() => {
+    historyTransactionRef.current = null
+  }, [])
+
+  const commitHistoryStep = useCallback(() => {
+    const transaction = historyTransactionRef.current
+    historyTransactionRef.current = null
+
+    if (!transaction || !transaction.hasChanges) {
+      return
+    }
+
+    setHistoryPast((previous) => [...previous, transaction.before])
+    setHistoryFuture([])
+  }, [])
+
+  const applySnapshot = useCallback((snapshot: Uint8ClampedArray) => {
+    const document = pixelDocumentRef.current
+
+    if (!document) {
+      return
+    }
+
+    document.pixels.set(snapshot)
+
+    const documentContext = documentContextRef.current
+    if (documentContext) {
+      const imageData = new ImageData(new Uint8ClampedArray(snapshot), document.width, document.height)
+      documentContext.putImageData(imageData, 0, 0)
+    }
+
+    setDocumentRenderVersion((version) => version + 1)
+  }, [])
+
+  const undoHistoryStep = useCallback(() => {
+    const currentSnapshot = cloneDocumentPixels()
+    if (!currentSnapshot) {
+      return
+    }
+
+    setHistoryPast((previousPast) => {
+      if (previousPast.length === 0) {
+        return previousPast
+      }
+
+      const previousSnapshot = previousPast[previousPast.length - 1]
+      setHistoryFuture((previousFuture) => [currentSnapshot, ...previousFuture])
+      applySnapshot(previousSnapshot)
+      return previousPast.slice(0, -1)
+    })
+  }, [applySnapshot, cloneDocumentPixels])
+
+  const redoHistoryStep = useCallback(() => {
+    const currentSnapshot = cloneDocumentPixels()
+    if (!currentSnapshot) {
+      return
+    }
+
+    setHistoryFuture((previousFuture) => {
+      const nextSnapshot = previousFuture[0]
+      if (!nextSnapshot) {
+        return previousFuture
+      }
+
+      setHistoryPast((previousPast) => [...previousPast, currentSnapshot])
+      applySnapshot(nextSnapshot)
+      return previousFuture.slice(1)
+    })
+  }, [applySnapshot, cloneDocumentPixels])
 
   const setPixelColor = useCallback((position: PixelPosition, color: Color) => {
     const document = pixelDocumentRef.current
@@ -275,6 +369,10 @@ const App = () => {
     document.pixels[index + 1] = nextG
     document.pixels[index + 2] = nextB
     document.pixels[index + 3] = nextA
+
+    if (historyTransactionRef.current) {
+      historyTransactionRef.current.hasChanges = true
+    }
 
     const documentContext = documentContextRef.current
     if (documentContext) {
@@ -573,6 +671,7 @@ const App = () => {
     }
 
     const handleMouseUp = () => {
+      commitHistoryStep()
       setPaintDragState({ isDrawing: false, lastPixelKey: null })
     }
 
@@ -583,7 +682,39 @@ const App = () => {
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
     }
-  }, [drawPaintPixel, getPixelFromClientPoint, paintDragState.isDrawing])
+  }, [commitHistoryStep, drawPaintPixel, getPixelFromClientPoint, paintDragState.isDrawing])
+
+  useEffect(() => {
+    const handleHistoryHotkeys = (event: KeyboardEvent) => {
+      const focusedElement = event.target as HTMLElement | null
+      if (focusedElement && (focusedElement.tagName === 'INPUT' || focusedElement.tagName === 'TEXTAREA')) {
+        return
+      }
+
+      if (!event.ctrlKey && !event.metaKey) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault()
+        undoHistoryStep()
+        return
+      }
+
+      if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        event.preventDefault()
+        redoHistoryStep()
+      }
+    }
+
+    window.addEventListener('keydown', handleHistoryHotkeys)
+
+    return () => {
+      window.removeEventListener('keydown', handleHistoryHotkeys)
+    }
+  }, [redoHistoryStep, undoHistoryStep])
 
   useEffect(() => {
     const handleGridToggle = (event: KeyboardEvent) => {
@@ -657,6 +788,9 @@ const App = () => {
 
     const document = await loadPixelDocument(selectedAsset.url)
     setPixelDocument(document)
+    setHistoryPast([])
+    setHistoryFuture([])
+    clearHistoryTransaction()
     setHoverPixel(null)
     setPaintDragState({ isDrawing: false, lastPixelKey: null })
     closeAssetModal()
@@ -738,6 +872,7 @@ const App = () => {
       }
 
       event.preventDefault()
+      beginHistoryStep()
       drawPaintPixel(pixel)
       setPaintDragState({ isDrawing: true, lastPixelKey: `${pixel.x},${pixel.y}` })
       setHoverPixel(pixel)
@@ -761,8 +896,12 @@ const App = () => {
     if (tool !== 'paint') {
       setHoverPixel(null)
       setPaintDragState({ isDrawing: false, lastPixelKey: null })
+      clearHistoryTransaction()
     }
   }
+
+  const canUndo = historyPast.length > 0
+  const canRedo = historyFuture.length > 0
 
   const handleColorPickerClick = () => {
     setIsColorPickerActive((previousState) => !previousState)
@@ -1052,6 +1191,18 @@ const App = () => {
         <button className="load-asset-button" onClick={openAssetModal}>
           Load Asset
         </button>
+
+        <section className="tools-section">
+          <h3 className="tools-title">History</h3>
+          <div className="history-row">
+            <button className="tool-button" onClick={undoHistoryStep} disabled={!canUndo}>
+              Undo
+            </button>
+            <button className="tool-button" onClick={redoHistoryStep} disabled={!canRedo}>
+              Redo
+            </button>
+          </div>
+        </section>
 
         <section className="tools-section">
           <h3 className="tools-title">Tools</h3>
