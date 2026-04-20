@@ -7,6 +7,8 @@ type AssetFile = {
   url: string
 }
 
+type AssetModalMode = 'load' | 'save'
+
 type Tool = 'inspect' | 'paint' | 'erase'
 
 type PixelDocument = {
@@ -183,9 +185,13 @@ const getDocumentPixel = (document: PixelDocument, x: number, y: number): Color 
 }
 
 const App = () => {
-  const [isAssetModalOpen, setIsAssetModalOpen] = useState(false)
+  const [assetModalMode, setAssetModalMode] = useState<AssetModalMode | null>(null)
   const [currentPath, setCurrentPath] = useState<string[]>([])
   const [selectedAssetKey, setSelectedAssetKey] = useState<string | null>(null)
+  const [savedAssets, setSavedAssets] = useState<AssetFile[]>([])
+  const [saveFileName, setSaveFileName] = useState('')
+  const [shouldSaveUpscaled, setShouldSaveUpscaled] = useState(false)
+  const [upscaleFactor, setUpscaleFactor] = useState('32')
   const [pixelDocument, setPixelDocument] = useState<PixelDocument | null>(null)
   const [activeTool, setActiveTool] = useState<Tool>('inspect')
   const [isColorPickerActive, setIsColorPickerActive] = useState(false)
@@ -424,12 +430,14 @@ const App = () => {
     [activeColor, setPixelColor],
   )
 
+  const availableAssets = useMemo(() => [...assets, ...savedAssets], [savedAssets])
+
   const { directories, files } = useMemo(() => {
     const prefix = currentPath.length > 0 ? `${currentPath.join('/')}/` : ''
     const foundDirectories = new Set<string>()
     const foundFiles: AssetFile[] = []
 
-    assets.forEach((asset) => {
+    availableAssets.forEach((asset) => {
       if (!asset.key.startsWith(prefix)) {
         return
       }
@@ -448,11 +456,11 @@ const App = () => {
       directories: Array.from(foundDirectories).sort((a, b) => a.localeCompare(b)),
       files: foundFiles.sort((a, b) => a.name.localeCompare(b.name)),
     }
-  }, [currentPath])
+  }, [availableAssets, currentPath])
 
   const selectedAsset = useMemo(
-    () => assets.find((asset) => asset.key === selectedAssetKey) ?? null,
-    [selectedAssetKey],
+    () => availableAssets.find((asset) => asset.key === selectedAssetKey) ?? null,
+    [availableAssets, selectedAssetKey],
   )
 
   useEffect(() => {
@@ -762,13 +770,22 @@ const App = () => {
   )
 
   const openAssetModal = () => {
-    setIsAssetModalOpen(true)
+    setAssetModalMode('load')
     setCurrentPath([])
     setSelectedAssetKey(null)
   }
 
+  const openSaveModal = () => {
+    setAssetModalMode('save')
+    setCurrentPath([])
+    setSelectedAssetKey(null)
+    setSaveFileName('')
+    setShouldSaveUpscaled(false)
+    setUpscaleFactor('32')
+  }
+
   const closeAssetModal = () => {
-    setIsAssetModalOpen(false)
+    setAssetModalMode(null)
     setCurrentPath([])
     setSelectedAssetKey(null)
   }
@@ -795,6 +812,76 @@ const App = () => {
     setPaintDragState({ isDrawing: false, lastPixelKey: null })
     closeAssetModal()
   }
+
+  const buildDocumentPng = useCallback((pixelDoc: PixelDocument, scale: number) => {
+    const baseCanvas = document.createElement('canvas')
+    baseCanvas.width = pixelDoc.width
+    baseCanvas.height = pixelDoc.height
+    const baseContext = baseCanvas.getContext('2d')
+
+    if (!baseContext) {
+      throw new Error('Canvas context unavailable.')
+    }
+
+    const imageData = new ImageData(new Uint8ClampedArray(pixelDoc.pixels), pixelDoc.width, pixelDoc.height)
+    baseContext.putImageData(imageData, 0, 0)
+
+    if (scale <= 1) {
+      return baseCanvas.toDataURL('image/png')
+    }
+
+    const upscaledCanvas = document.createElement('canvas')
+    upscaledCanvas.width = Math.max(1, pixelDoc.width * scale)
+    upscaledCanvas.height = Math.max(1, pixelDoc.height * scale)
+    const upscaledContext = upscaledCanvas.getContext('2d')
+
+    if (!upscaledContext) {
+      throw new Error('Canvas context unavailable.')
+    }
+
+    upscaledContext.imageSmoothingEnabled = false
+    upscaledContext.drawImage(baseCanvas, 0, 0, upscaledCanvas.width, upscaledCanvas.height)
+    return upscaledCanvas.toDataURL('image/png')
+  }, [])
+
+  const saveCurrentAsset = useCallback(() => {
+    if (!pixelDocument) {
+      return
+    }
+
+    const fallbackName = `asset_${new Date().toISOString().replace(/[:.]/g, '-')}`
+    const normalizedName = saveFileName.trim().replace(/\.png$/i, '').replace(/[\\/:*?"<>|]/g, '_')
+    const baseName = normalizedName.length > 0 ? normalizedName : fallbackName
+    const keyPrefix = currentPath.length > 0 ? `${currentPath.join('/')}/` : ''
+    const nextAssets: AssetFile[] = [
+      {
+        key: `${keyPrefix}${baseName}.png`,
+        name: `${baseName}.png`,
+        url: buildDocumentPng(pixelDocument, 1),
+      },
+    ]
+
+    if (shouldSaveUpscaled) {
+      const parsedFactor = Number.parseInt(upscaleFactor, 10)
+      const safeFactor = Number.isFinite(parsedFactor) ? Math.max(1, parsedFactor) : 32
+      const upscaleName = `${baseName}_upscaled_${safeFactor}x`
+      nextAssets.push({
+        key: `${keyPrefix}${upscaleName}.png`,
+        name: `${upscaleName}.png`,
+        url: buildDocumentPng(pixelDocument, safeFactor),
+      })
+    }
+
+    setSavedAssets((previousAssets) => {
+      const nextByKey = new Map(previousAssets.map((asset) => [asset.key, asset]))
+      nextAssets.forEach((asset) => {
+        nextByKey.set(asset.key, asset)
+      })
+      return Array.from(nextByKey.values()).sort((a, b) => a.key.localeCompare(b.key))
+    })
+
+    closeAssetModal()
+  }, [buildDocumentPng, closeAssetModal, currentPath, pixelDocument, saveFileName, shouldSaveUpscaled, upscaleFactor])
 
   useEffect(() => {
     const viewportElement = viewportRef.current
@@ -1271,6 +1358,10 @@ const App = () => {
             })}
           </div>
         </section>
+
+        <button className="load-asset-button save-button" onClick={openSaveModal} disabled={!pixelDocument}>
+          Save
+        </button>
       </aside>
 
       <main className="main-area">
@@ -1297,11 +1388,11 @@ const App = () => {
         )}
       </main>
 
-      {isAssetModalOpen ? (
+      {assetModalMode ? (
         <div className="modal-overlay">
           <div className="modal-window">
             <div className="modal-header-row">
-              <h2 className="modal-title">Load Asset</h2>
+              <h2 className="modal-title">{assetModalMode === 'load' ? 'Load Asset' : 'Save Asset'}</h2>
               <span className="path-label">{directoryPathLabel}</span>
             </div>
 
@@ -1322,16 +1413,23 @@ const App = () => {
                 </button>
               ))}
 
-              {files.map((file) => (
-                <button
-                  key={file.key}
-                  className={`file-preview-button ${selectedAssetKey === file.key ? 'selected' : ''}`}
-                  onClick={() => setSelectedAssetKey(file.key)}
-                >
-                  <img src={file.url} alt={file.name} className="file-thumbnail" />
-                  <span className="file-name-label">{file.name}</span>
-                </button>
-              ))}
+              {files.map((file) =>
+                assetModalMode === 'load' ? (
+                  <button
+                    key={file.key}
+                    className={`file-preview-button ${selectedAssetKey === file.key ? 'selected' : ''}`}
+                    onClick={() => setSelectedAssetKey(file.key)}
+                  >
+                    <img src={file.url} alt={file.name} className="file-thumbnail" />
+                    <span className="file-name-label">{file.name}</span>
+                  </button>
+                ) : (
+                  <div key={file.key} className="file-preview-button existing-file-card">
+                    <img src={file.url} alt={file.name} className="file-thumbnail" />
+                    <span className="file-name-label">{file.name}</span>
+                  </div>
+                ),
+              )}
 
               {directories.length === 0 && files.length === 0 ? (
                 <p className="empty-state-text">No PNG assets in this folder.</p>
@@ -1339,16 +1437,49 @@ const App = () => {
             </div>
 
             <div className="modal-footer">
+              {assetModalMode === 'save' ? (
+                <div className="save-controls-row">
+                  <input
+                    className="save-filename-input"
+                    placeholder="File name"
+                    value={saveFileName}
+                    onChange={(event) => setSaveFileName(event.target.value)}
+                  />
+                  <label className="upscale-option">
+                    <input
+                      type="checkbox"
+                      checked={shouldSaveUpscaled}
+                      onChange={(event) => setShouldSaveUpscaled(event.target.checked)}
+                    />
+                    Include Upscale by
+                    <input
+                      className="upscale-factor-input"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={upscaleFactor}
+                      disabled={!shouldSaveUpscaled}
+                      onChange={(event) => setUpscaleFactor(event.target.value)}
+                    />
+                  </label>
+                </div>
+              ) : null}
               <button className="cancel-button" onClick={closeAssetModal}>
                 Cancel
               </button>
-              <button
-                className={`confirm-load-button ${selectedAsset ? 'enabled' : ''}`}
-                onClick={loadSelectedAsset}
-                disabled={!selectedAsset}
-              >
-                Load
-              </button>
+              {assetModalMode === 'load' ? (
+                <button
+                  className={`confirm-load-button ${selectedAsset ? 'enabled' : ''}`}
+                  onClick={loadSelectedAsset}
+                  disabled={!selectedAsset}
+                >
+                  Load
+                </button>
+              ) : (
+                <button className="confirm-load-button enabled" onClick={saveCurrentAsset}>
+                  Save
+                </button>
+              )}
             </div>
           </div>
         </div>
