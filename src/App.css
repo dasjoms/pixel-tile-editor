@@ -101,8 +101,8 @@ body {
   cursor: grab;
 }
 
-.canvas-viewport:active {
-  cursor: grabbing;
+.canvas-viewport.paint-cursor {
+  cursor: crosshair;
 }
 
 .pixel-canvas {
@@ -300,4 +300,45 @@ body {
 .confirm-load-button.enabled {
   cursor: pointer;
   background-color: #2aa446;
+}
+
+.color-tools-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.recent-header-row {
+  display: flex;
+  align-items: center;
+}
+
+.recent-title {
+  font-size: 12px;
+  color: #aeb7cf;
+  font-weight: 600;
+}
+
+.recent-colors-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.recent-color-swatch {
+  border: 1px solid #3b4150;
+  border-radius: 6px;
+  background-color: #222633;
+  height: 24px;
+  cursor: pointer;
+}
+
+.recent-color-swatch.active {
+  border-color: #5ec3ff;
+  box-shadow: inset 0 0 0 1px #5ec3ff;
+}
+
+.recent-color-swatch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
