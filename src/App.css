@@ -8,11 +8,12 @@ body {
 
 .app-frame {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
   width: 100%;
   background-color: #1f1f23;
   color: #f3f3f5;
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -78,15 +79,16 @@ body {
 
 .main-area {
   flex: 1;
+  min-height: 0;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: 16px;
+  box-sizing: border-box;
 }
 
 .canvas-viewport {
   width: 100%;
-  height: calc(100vh - 48px);
-  max-height: 100%;
+  height: 100%;
   border: 1px solid #3f4557;
   border-radius: 12px;
   background-color: #12141a;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import './App.css'
 
 type AssetFile = {
@@ -126,7 +126,9 @@ const App = () => {
   )
 
   useEffect(() => {
-    if (!viewportRef.current) {
+    const viewportElement = viewportRef.current
+
+    if (!viewportElement) {
       return
     }
 
@@ -143,12 +145,12 @@ const App = () => {
       })
     })
 
-    observer.observe(viewportRef.current)
+    observer.observe(viewportElement)
 
     return () => {
       observer.disconnect()
     }
-  }, [])
+  }, [pixelDocument])
 
   useEffect(() => {
     if (!pixelDocument) {
@@ -293,32 +295,44 @@ const App = () => {
     closeAssetModal()
   }
 
-  const handleWheelZoom = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!pixelDocument || !viewportRef.current) {
+  useEffect(() => {
+    const viewportElement = viewportRef.current
+
+    if (!viewportElement || !pixelDocument) {
       return
     }
 
-    event.preventDefault()
+    const handleWheelZoom = (event: globalThis.WheelEvent) => {
+      event.preventDefault()
 
-    const bounds = viewportRef.current.getBoundingClientRect()
-    const pointerX = event.clientX - bounds.left
-    const pointerY = event.clientY - bounds.top
+      const bounds = viewportElement.getBoundingClientRect()
+      const pointerX = event.clientX - bounds.left
+      const pointerY = event.clientY - bounds.top
+      const zoomFactor = Math.exp(-event.deltaY * 0.002)
 
-    const zoomFactor = Math.exp(-event.deltaY * 0.002)
+      setZoom((previousZoom) => {
+        const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, previousZoom * zoomFactor))
 
-    setZoom((previousZoom) => {
-      const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, previousZoom * zoomFactor))
-      const worldX = (pointerX - pan.x) / previousZoom
-      const worldY = (pointerY - pan.y) / previousZoom
+        setPan((previousPan) => {
+          const worldX = (pointerX - previousPan.x) / previousZoom
+          const worldY = (pointerY - previousPan.y) / previousZoom
 
-      setPan({
-        x: pointerX - worldX * nextZoom,
-        y: pointerY - worldY * nextZoom,
+          return {
+            x: pointerX - worldX * nextZoom,
+            y: pointerY - worldY * nextZoom,
+          }
+        })
+
+        return nextZoom
       })
+    }
 
-      return nextZoom
-    })
-  }
+    viewportElement.addEventListener('wheel', handleWheelZoom, { passive: false })
+
+    return () => {
+      viewportElement.removeEventListener('wheel', handleWheelZoom)
+    }
+  }, [pixelDocument])
 
   const handleViewportMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (!pixelDocument || event.button !== 0) {
@@ -359,7 +373,6 @@ const App = () => {
           <div
             ref={viewportRef}
             className="canvas-viewport"
-            onWheel={handleWheelZoom}
             onMouseDown={handleViewportMouseDown}
           >
             <canvas ref={canvasRef} className="pixel-canvas" />
